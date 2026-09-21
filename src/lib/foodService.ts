@@ -2,6 +2,7 @@ import { calculateNutriScore } from "./calculateNutriScore";
 import { detectRedFlags } from "./redFlags";
 import { findMockProductByBarcode, MOCK_PRODUCTS, searchMockProducts } from "./mockData";
 import type { NutriGrade, NutrientsPer100g, Product, ScoredProduct } from "./types";
+import { getContributedScoredProduct } from "./contributions";
 
 const OFF_BASE =
   process.env.NEXT_PUBLIC_OFF_API_BASE ?? "https://world.openfoodfacts.org";
@@ -168,36 +169,46 @@ export interface LookupResult {
 }
 
 /** Look up a single product by EAN/UPC barcode (from a scan). */
+/** Look up a single product by EAN/UPC barcode (from a scan). */
 export async function getProductByBarcode(barcode: string): Promise<LookupResult> {
-  const fields = [
-    "code", "product_name", "product_name_en", "brands", "categories",
-    "image_front_url", "image_url", "quantity", "serving_size", "serving_quantity",
-    "ingredients_text", "ingredients_text_en", "additives_tags",
-    "nutriscore_grade", "nutriments", "countries_tags",
-  ].join(",");
+    const fields = [
+        "code", "product_name", "product_name_en", "brands", "categories",
+        "image_front_url", "image_url", "quantity", "serving_size", "serving_quantity",
+        "ingredients_text", "ingredients_text_en", "additives_tags",
+        "nutriscore_grade", "nutriments", "countries_tags",
+    ].join(",");
 
-  try {
-    const url = `${OFF_BASE}/api/v2/product/${encodeURIComponent(barcode)}.json?fields=${fields}&user_agent=${encodeURIComponent(USER_AGENT)}`;
-    const res = await fetchWithTimeout(url);
-    if (!res.ok) throw new FoodServiceError(`Open Food Facts responded with ${res.status}`);
-    const data: OFFProductResponse = await res.json();
+    try {
+        const url = `${OFF_BASE}/api/v2/product/${encodeURIComponent(barcode)}.json?fields=${fields}&user_agent=${encodeURIComponent(USER_AGENT)}`;
+        const res = await fetchWithTimeout(url);
+        if (!res.ok) throw new FoodServiceError(`Open Food Facts responded with ${res.status}`);
+        const data: OFFProductResponse = await res.json();
 
-    if (data.status === 1 && data.product) {
-      const normalized = normalizeOFFProduct(data.product);
-      if (normalized) return { product: scoreProduct(normalized), usedFallback: false };
+        if (data.status === 1 && data.product) {
+            const normalized = normalizeOFFProduct(data.product);
+            if (normalized) return { product: scoreProduct(normalized), usedFallback: false };
+        }
+
+        // Not found upstream — try the local Indian mock dataset next, then any
+        // community contribution saved on this device, before giving up.
+        const mock = findMockProductByBarcode(barcode);
+        if (mock) return { product: scoreProduct(mock), usedFallback: true };
+
+        const contributed = getContributedScoredProduct(barcode);
+        return { product: contributed ?? null, usedFallback: true };
+    } catch (err) {
+        // Network failure / timeout / parsing error — fall back gracefully.
+        const mock = findMockProductByBarcode(barcode);
+        if (mock) return { product: scoreProduct(mock), usedFallback: true };
+
+        const contributed = getContributedScoredProduct(barcode);
+        if (contributed) return { product: contributed, usedFallback: true };
+
+        throw new FoodServiceError(
+            "Couldn't reach Open Food Facts and no offline match was found.",
+            err
+        );
     }
-    // Not found upstream — try the local Indian mock dataset before giving up.
-    const mock = findMockProductByBarcode(barcode);
-    return { product: mock ? scoreProduct(mock) : null, usedFallback: true };
-  } catch (err) {
-    // Network failure / timeout / parsing error — fall back gracefully.
-    const mock = findMockProductByBarcode(barcode);
-    if (mock) return { product: scoreProduct(mock), usedFallback: true };
-    throw new FoodServiceError(
-      "Couldn't reach Open Food Facts and no offline match was found.",
-      err
-    );
-  }
 }
 
 /** Debounced-caller-friendly text search, scoped to products sold in India. */
