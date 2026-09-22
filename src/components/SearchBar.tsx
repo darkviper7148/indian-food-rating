@@ -10,9 +10,16 @@ import type { ScoredProduct } from "@/lib/types";
 interface SearchBarProps {
   onSelectProduct: (product: ScoredProduct) => void;
   onOpenScanner: () => void;
+  /**
+   * Fired when the user presses Enter in the input — for a numeric barcode
+   * this should go straight to a barcode lookup, for free text it should
+   * run a full search and surface the best match (or NotFoundState if
+   * nothing turns up), without requiring a dropdown click.
+   */
+  onSubmitQuery: (query: string) => void;
 }
 
-export default function SearchBar({ onSelectProduct, onOpenScanner }: SearchBarProps) {
+export default function SearchBar({ onSelectProduct, onOpenScanner, onSubmitQuery }: SearchBarProps) {
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<ScoredProduct[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -45,6 +52,23 @@ export default function SearchBar({ onSelectProduct, onOpenScanner }: SearchBarP
     return () => controller.abort();
   }, [debouncedQuery]);
 
+  const handleSubmit = () => {
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    abortRef.current?.abort();
+    setIsOpen(false);
+    onSubmitQuery(trimmed);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleSubmit();
+    } else if (e.key === "Escape") {
+      setIsOpen(false);
+    }
+  };
+
   return (
     <div className="relative">
       <div className="flex items-center gap-2 rounded-full border border-papad-300 bg-white px-4 py-3 shadow-soft focus-within:border-turmeric">
@@ -52,10 +76,13 @@ export default function SearchBar({ onSelectProduct, onOpenScanner }: SearchBarP
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={handleKeyDown}
           onFocus={() => suggestions.length > 0 && setIsOpen(true)}
           placeholder="Search by product or brand — e.g. Maggi, Bhujia…"
           className="w-full bg-transparent text-sm text-masala placeholder:text-masala-300 focus:outline-none"
           aria-label="Search packaged foods"
+          inputMode="search"
+          enterKeyHint="search"
         />
         {query && (
           <button
@@ -89,9 +116,12 @@ export default function SearchBar({ onSelectProduct, onOpenScanner }: SearchBarP
           )}
 
           {!isSearching && suggestions.length === 0 && (
-            <p className="px-4 py-3 text-sm text-masala-300">
-              No matches yet — try a shorter or different name.
-            </p>
+            <button
+              onClick={handleSubmit}
+              className="flex w-full items-center justify-between px-4 py-3 text-left text-sm text-masala-500 hover:bg-papad-100"
+            >
+              <span>No matches yet — press Enter to search &ldquo;{query.trim()}&rdquo; anyway.</span>
+            </button>
           )}
 
           {!isSearching &&

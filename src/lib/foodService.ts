@@ -2,7 +2,6 @@ import { calculateNutriScore } from "./calculateNutriScore";
 import { detectRedFlags } from "./redFlags";
 import { findMockProductByBarcode, MOCK_PRODUCTS, searchMockProducts } from "./mockData";
 import type { NutriGrade, NutrientsPer100g, Product, ScoredProduct } from "./types";
-import { getContributedScoredProduct } from "./contributions";
 
 const OFF_BASE =
   process.env.NEXT_PUBLIC_OFF_API_BASE ?? "https://world.openfoodfacts.org";
@@ -168,47 +167,35 @@ export interface LookupResult {
   usedFallback: boolean;
 }
 
-/** Look up a single product by EAN/UPC barcode (from a scan). */
-/** Look up a single product by EAN/UPC barcode (from a scan). */
+/**
+ * Look up a single product by EAN/UPC barcode (from a scan or a direct
+ * numeric search). Routed through our own `/api/product/[barcode]` Route
+ * Handler rather than Open Food Facts directly — that endpoint keeps a
+ * server-side cache (in-memory + stale-while-revalidate headers) so
+ * repeat scans of the same product skip the external round-trip entirely.
+ */
 export async function getProductByBarcode(barcode: string): Promise<LookupResult> {
-    const fields = [
-        "code", "product_name", "product_name_en", "brands", "categories",
-        "image_front_url", "image_url", "quantity", "serving_size", "serving_quantity",
-        "ingredients_text", "ingredients_text_en", "additives_tags",
-        "nutriscore_grade", "nutriments", "countries_tags",
-    ].join(",");
+  try {
+    const res = await fetchWithTimeout(`/api/product/${encodeURIComponent(barcode)}`);
+    if (!res.ok) throw new FoodServiceError(`Product lookup failed with ${res.status}`);
+    const data: OFFProductResponse = await res.json();
 
-    try {
-        const url = `${OFF_BASE}/api/v2/product/${encodeURIComponent(barcode)}.json?fields=${fields}&user_agent=${encodeURIComponent(USER_AGENT)}`;
-        const res = await fetchWithTimeout(url);
-        if (!res.ok) throw new FoodServiceError(`Open Food Facts responded with ${res.status}`);
-        const data: OFFProductResponse = await res.json();
-
-        if (data.status === 1 && data.product) {
-            const normalized = normalizeOFFProduct(data.product);
-            if (normalized) return { product: scoreProduct(normalized), usedFallback: false };
-        }
-
-        // Not found upstream — try the local Indian mock dataset next, then any
-        // community contribution saved on this device, before giving up.
-        const mock = findMockProductByBarcode(barcode);
-        if (mock) return { product: scoreProduct(mock), usedFallback: true };
-
-        const contributed = getContributedScoredProduct(barcode);
-        return { product: contributed ?? null, usedFallback: true };
-    } catch (err) {
-        // Network failure / timeout / parsing error — fall back gracefully.
-        const mock = findMockProductByBarcode(barcode);
-        if (mock) return { product: scoreProduct(mock), usedFallback: true };
-
-        const contributed = getContributedScoredProduct(barcode);
-        if (contributed) return { product: contributed, usedFallback: true };
-
-        throw new FoodServiceError(
-            "Couldn't reach Open Food Facts and no offline match was found.",
-            err
-        );
+    if (data.status === 1 && data.product) {
+      const normalized = normalizeOFFProduct(data.product);
+      if (normalized) return { product: scoreProduct(normalized), usedFallback: false };
     }
+    // Not found upstream — try the local Indian mock dataset before giving up.
+    const mock = findMockProductByBarcode(barcode);
+    return { product: mock ? scoreProduct(mock) : null, usedFallback: true };
+  } catch (err) {
+    // Network failure / timeout / parsing error — fall back gracefully.
+    const mock = findMockProductByBarcode(barcode);
+    if (mock) return { product: scoreProduct(mock), usedFallback: true };
+    throw new FoodServiceError(
+      "Couldn't reach the product lookup service and no offline match was found.",
+      err
+    );
+  }
 }
 
 /** Debounced-caller-friendly text search, scoped to products sold in India. */
@@ -269,4 +256,33 @@ export function getAlternatives(product: ScoredProduct, limit = 3): ScoredProduc
     .filter((p) => p.grade < product.grade) // 'a' < 'e' lexically = better grade
     .sort((a, b) => a.grade.localeCompare(b.grade));
   return candidates.slice(0, limit);
+}
+
+// ---------------------------------------------------------------------------
+// Pre-fetching: warm the server-side cache for popular Indian packaged
+// foods so the first real search/scan of the day for a common item is
+// already a cache hit by the time the user gets there.
+// ---------------------------------------------------------------------------
+
+const POPULAR_BARCODES = MOCK_PRODUCTS.map((p) => p.barcode);
+
+/**
+ * Fire-and-forget warm-up of `/api/product/[barcode]` for a curated list of
+ * high-traffic barcodes. Safe to call on every app mount — each call is a
+ * cheap cache-hit once warm, and failures are swallowed since this is a
+ * pure performance nicety, never something the UI should block or error on.
+ */
+export function prefetchPopularProducts(): void {
+  if (typeof window === "undefined") return; // no-op during SSR
+
+  for (const barcode of POPULAR_BARCODES) {
+    fetch(`/api/product/${encodeURIComponent(barcode)}`, {
+      headers: { Accept: "application/json" },
+      // Let the request finish even if the caller unmounts right away —
+      // this is purely about warming the server cache, not the response.
+      keepalive: true,
+    }).catch(() => {
+      /* best-effort — a failed prefetch has no user-facing consequence */
+    });
+  }
 }
