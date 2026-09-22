@@ -42,7 +42,7 @@ function isValidPayload(body: unknown): body is ContributionPayload {
 }
 
 // TODO(backend): replace this module-level array with a real INSERT against
-// Supabase/PostgreSQL — e.g. `supabase.from("contributions").insert(body)`.
+// Supabase/PostgreSQL â€” e.g. `supabase.from("contributions").insert(body)`.
 // This in-memory list exists only so the route has something to hand back
 // in dev; it resets on every server restart / serverless cold start and is
 // NOT durable storage. Client persistence for now lives in
@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
         {
             status: "accepted",
             message:
-                "Contribution received and queued. Currently held in-memory only — " +
+                "Contribution received and queued. Currently held in-memory only â€” " +
                 "point this route at Supabase/PostgreSQL for durable storage.",
             barcode: body.barcode,
         },
@@ -82,7 +82,7 @@ export async function POST(req: NextRequest) {
     );
 }
 
-// Dev/debug helper — inspect what's queued in this server instance.
+// Dev/debug helper â€” inspect what's queued in this server instance.
 // Remove or gate behind an admin check before any real deployment.
 export async function GET() {
     return NextResponse.json({ count: pendingContributions.length, items: pendingContributions });
